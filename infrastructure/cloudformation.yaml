@@ -1,0 +1,97 @@
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-etl-bucket
+
+  ExtractLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Code:
+        S3Bucket: my-lambda-code-bucket
+        S3Key: extract_lambda.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  TransformLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Code:
+        S3Bucket: my-lambda-code-bucket
+        S3Key: transform_lambda.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: TransformGlueJob
+      Role: !GetAtt GlueExecutionRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: s3://my-etl-bucket/glue_scripts/transform_glue.py
+
+  StepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString: !Sub |
+        {
+          "StartAt": "ExtractData",
+          "States": {
+            "ExtractData": {
+              "Type": "Task",
+              "Resource": "${ExtractLambda.Arn}",
+              "Next": "TransformData"
+            },
+            "TransformData": {
+              "Type": "Task",
+              "Resource": "${TransformLambda.Arn}",
+              "Next": "LoadData"
+            },
+            "LoadData": {
+              "Type": "Task",
+              "Resource": "${GlueJob.Arn}",
+              "End": true
+            }
+          }
+        }
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:*
+                Resource: "*"
+
+  GlueExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GlueS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:*
+                Resource: "*"
