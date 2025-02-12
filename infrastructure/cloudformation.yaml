@@ -6,9 +6,9 @@ Resources:
   S3Bucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${AWS::AccountId}-etl-pipeline-bucket"
+      BucketName: !Sub "${AWS::AccountId}-etl-pipeline-bucket-${AWS::Region}"
 
-  # IAM Role for Lambda
+  # IAM Role for Lambda (Create Role First)
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -19,21 +19,39 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: LambdaS3Access
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:GetObject
-                Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
-              - Effect: Allow
-                Action: states:StartExecution
-                Resource: !GetAtt StepFunction.Arn
 
-  # IAM Role for Glue
+  # Attach IAM Policy to LambdaRole Separately
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LambdaS3StepFunctionAccess
+      Roles: 
+        - !Ref LambdaRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource: "*"  # Alternatively, replace with !GetAtt StepFunction.Arn
+
+  # AWS Lambda Function
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: app.handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.9
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: "/lambda_functions/extract_lambda/app.py" # Replace with your Lambda function location
+      Timeout: 300
+
+  # AWS Glue Role
   GlueRole:
     Type: AWS::IAM::Role
     Properties:
@@ -44,19 +62,34 @@ Resources:
             Principal:
               Service: glue.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: GlueS3Access
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
-              - Effect: Allow
-                Action: glue:StartJobRun
-                Resource: "*"
+
+  GluePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: GlueS3Access
+      Roles: 
+        - !Ref GlueRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+          - Effect: Allow
+            Action: glue:StartJobRun
+            Resource: "*"
+
+  # AWS Glue Job
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: TransformJob
+      Role: !GetAtt GlueRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub "s3://${S3Bucket}/glue_scripts/script.py" # Replace with your script location
 
   # IAM Role for Step Functions
   StepFunctionRole:
@@ -69,41 +102,21 @@ Resources:
             Principal:
               Service: states.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: StepFunctionAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - lambda:InvokeFunction
-                  - glue:StartJobRun
-                Resource: "*"
 
-  # AWS Lambda Function
-  LambdaFunction:
-    Type: AWS::Lambda::Function
+  StepFunctionPolicy:
+    Type: AWS::IAM::Policy
     Properties:
-      Handler: app.handler
-      Role: !GetAtt LambdaRole.Arn
-      Runtime: python3.9
-      Code:
-        S3Bucket: !Ref S3Bucket
-        S3Key: "/lambda_functions/extract_lambda/app.py"
-      Timeout: 300
-
-  # AWS Glue Job
-  GlueJob:
-    Type: AWS::Glue::Job
-    Properties:
-      Name: TransformJob
-      Role: !GetAtt GlueRole.Arn
-      Command:
-        Name: glueetl
-        ScriptLocation: !Sub "s3://${S3Bucket}/glue_scripts/script.py"
-      DefaultArguments:
-        "--input_path": !Sub "s3://${S3Bucket}/input-data/"
-        "--output_path": !Sub "s3://${S3Bucket}/transformed-data/"
+      PolicyName: StepFunctionAccess
+      Roles: 
+        - !Ref StepFunctionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+              - glue:StartJobRun
+            Resource: "*"
 
   # AWS Step Function
   StepFunction:
@@ -138,35 +151,6 @@ Resources:
           }
         }
 
-  # API Gateway to Trigger Step Function
-  ApiGateway:
-    Type: AWS::ApiGatewayV2::Api
-    Properties:
-      Name: ETLPipelineAPI
-      ProtocolType: HTTP
-
-  ApiIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref ApiGateway
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
-      PayloadFormatVersion: "1.0"
-
-  ApiRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref ApiGateway
-      RouteKey: "POST /start-etl"
-      Target: !Sub "integrations/${ApiIntegration}"
-
-  ApiStage:
-    Type: AWS::ApiGatewayV2::Stage
-    Properties:
-      ApiId: !Ref ApiGateway
-      StageName: prod
-      AutoDeploy: true
-
   # IAM Role for API Gateway
   ApiGatewayRole:
     Type: AWS::IAM::Role
@@ -185,15 +169,65 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: states:StartExecution
-                Resource: !GetAtt StepFunction.Arn
+                Resource: !Ref StepFunction
 
-Outputs:
-  S3BucketName:
-    Description: Name of the S3 bucket
-    Value: !Ref S3Bucket
-  StepFunctionArn:
-    Description: ARN of the Step Function
-    Value: !GetAtt StepFunction.Arn
-  ApiGatewayEndpoint:
-    Description: API Gateway Endpoint URL
-    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/start-etl"
+# API Gateway (V1 - REST API)
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ETLPipelineAPI
+      Description: API to trigger ETL pipeline using Step Functions
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource (Path: /start-etl)
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: "start-etl"
+      RestApiId: !Ref ApiGateway
+
+  # API Gateway Method (POST /start-etl)
+  ApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiGatewayRole.Arn
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
+        RequestTemplates:
+          application/json: |
+            {
+              "input": "$util.escapeJavaScript($input.body)",
+              "stateMachineArn": "${StepFunction}"
+            }
+        PassthroughBehavior: WHEN_NO_MATCH
+        IntegrationResponses:
+          - StatusCode: 200
+
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: "Empty"
+
+  # Deploy API Gateway
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref ApiGateway
+    DependsOn: ApiMethod
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+  
