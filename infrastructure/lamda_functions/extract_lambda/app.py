@@ -1,37 +1,60 @@
 import boto3
-import requests
+import os
 from datetime import datetime
 
-s3_client = boto3.client('s3')
+# Initialize the S3 client
+s3 = boto3.client('s3')
 
 def lambda_handler(event, context):
-    # Extract date from event
-    date = event.get('date')
-    if not date:
-        return {"status": "error", "message": "Date parameter is required"}
+    # Specify the source and destination buckets and directories
+    source_bucket = 'upload-raw-data'
+    source_prefix = 'raw-data/'  # Updated to match your description
 
-    # Validate date format
+    destination_bucket = 'serverless-etl'
+    destination_prefix = 'input-data'
+
     try:
-        datetime.strptime(date, '%Y-%m-%d')
-    except ValueError:
-        return {"status": "error", "message": "Invalid date format. Use YYYY-MM-DD"}
-
-    # Check if S3 file for the date already exists
-    bucket_name = "raw-data-bucket"
-    file_key = f"raw/{date}.json"
-    try:
-        s3_client.head_object(Bucket=bucket_name, Key=file_key)
-        return {"status": "error", "message": f"File for {date} already exists"}
-    except s3_client.exceptions.NoSuchKey:
-        pass  # File does not exist, proceed
-
-    # Extract data from API
-    api_url = f"https://api.example.com/data?date={date}"
-    response = requests.get(api_url)
-    if response.status_code != 200:
-        return {"status": "error", "message": "Failed to fetch data from API"}
-
-    # Write raw data to S3
-    s3_client.put_object(Bucket=bucket_name, Key=file_key, Body=response.text)
-
-    return {"status": "success", "message": f"Data extracted for {date}"}
+        # List objects in the source directory
+        response = s3.list_objects_v2(Bucket=source_bucket, Prefix=source_prefix)
+        
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                # Get the object key (file path)
+                source_key = obj['Key']
+                
+                # Skip if the key is a directory (ends with '/')
+                if source_key.endswith('/'):
+                    continue
+                
+                # Extract the file name (without the prefix)
+                
+                # Get the current date in YYYY/MM/DD format
+                current_date = datetime.now().strftime("%Y-%m-%d")
+                
+                # Create the destination key with the date format
+                destination_key = f"{destination_prefix}/data_{current_date}"
+                
+                # Copy the object to the destination
+                copy_source = {'Bucket': source_bucket, 'Key': source_key}
+                s3.copy_object(CopySource=copy_source, Bucket=destination_bucket, Key=destination_key)
+                
+                # Delete the object from the source (if you want to move instead of copy)
+                # s3.delete_object(Bucket=source_bucket, Key=source_key)
+                
+                print(f"Moved {source_key} to {destination_key}")
+        else:
+            print("No files found in the source directory.")
+        
+        return {
+            'statusCode': 200,
+            "bucket_name" : destination_bucket,
+            "destination_key" : f"{destination_prefix}",
+            'body': 'Files moved successfully!'
+        }
+    
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': f"Error: {str(e)}"
+        }

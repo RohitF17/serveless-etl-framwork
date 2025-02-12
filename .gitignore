@@ -1,1 +1,5 @@
 .env
+env
+/env
+spark.py
+.github
