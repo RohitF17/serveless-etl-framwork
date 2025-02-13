@@ -1,4 +1,4 @@
-## Cost-Effective Serverless ETL Framework
+## Cost-Effective Serverless ETL PipeLine
 
 ## Overview
 This project demonstrates a fully serverless ETL pipeline that extracts data via an API trigger, transforms it using AWS Glue, stores the results in Amazon S3 as Parquet files, and then loads the transformed data into Google BigQuery for analytics.
